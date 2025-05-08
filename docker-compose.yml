@@ -10,20 +10,11 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3001
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
       - DOCKER_ENV=true
     volumes:
       - ./logs:/usr/src/app/logs
       - plugin-data:/usr/src/app/plugins
     restart: unless-stopped
 
-  redis:
-    image: redis:alpine
-    volumes:
-      - redis-data:/data
-    restart: unless-stopped
-
 volumes:
-  redis-data:
   plugin-data:

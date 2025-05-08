@@ -4,7 +4,8 @@ import dotenv from 'dotenv';
 import { extractPluginName, writeFilesToDisk } from '../utils/fileUtils';
 import path from 'path';
 import fs from 'fs';
-import { addBuildJob } from '../services/buildQueue';
+import { buildPlugin } from '../services/buildQueue';
+
 
 // Add this interface near the top of your file
 interface PluginMetadata {
@@ -338,8 +339,16 @@ router.post('/', async (req, res: Response) => {
       const pluginDir = path.resolve(process.cwd(), pluginName);
       
       // Add build job to queue
-      const job = await addBuildJob(pluginDir);
-      console.log(`Build job added to queue: ${job.id}`);
+      try {
+        buildPlugin(pluginDir).then(result => {
+          console.log(`Build completed for ${pluginName}:`, result.success ? "SUCCESS" : "FAILED");
+        }).catch(err => {
+          console.error(`Build error for ${pluginName}:`, err);
+        });
+        console.log(`Build process started for: ${pluginName}`);
+      } catch (buildError) {
+        console.error(`Failed to start build process for ${pluginName}:`, buildError);
+      }
       
       // You could save the job ID to allow checking build status later
     }
