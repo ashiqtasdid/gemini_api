@@ -12,6 +12,7 @@ services:
       - PORT=3001
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - DOCKER_ENV=true
     volumes:
       - ./logs:/usr/src/app/logs
       - plugin-data:/usr/src/app/plugins

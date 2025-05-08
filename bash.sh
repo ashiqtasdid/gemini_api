@@ -22,7 +22,8 @@ spinner() {
     local delay=0.1
     local spinstr='|/-\'
     echo -n "   "
-    while [ "$(ps a | awk '{print $1}' | grep -w $pid)" ]; do
+    # Docker-compatible process check
+    while ps -p $pid > /dev/null 2>&1; do
         local temp=${spinstr#?}
         printf "\b\b\b[%c]" "$spinstr"
         local spinstr=$temp${spinstr%"$temp"}
@@ -137,6 +138,27 @@ log "INFO" "Starting build process for plugin in $PLUGIN_DIR"
 log "INFO" "Using $API_HOST for AI assistance"
 $VERBOSE && log "INFO" "Maven parallel threads: $MAVEN_PARALLEL"
 $VERBOSE && log "INFO" "Maximum AI fix attempts: $MAX_AI_FIX_ATTEMPTS"
+
+# Early in the script, add better debugging:
+echo "Starting build script with arguments:"
+echo "Plugin directory: $PLUGIN_DIR"
+echo "API host: $API_HOST"
+echo "Current directory: $(pwd)"
+echo "Maven version: $(mvn --version 2>&1 || echo 'Maven not found')"
+echo "Java version: $(java -version 2>&1 || echo 'Java not found')"
+
+# Add this function to handle Docker-specific issues:
+fix_docker_paths() {
+    # Make sure we can write to output directories
+    mkdir -p "$PLUGIN_DIR/target" 2>/dev/null || true
+    chmod -R 777 "$PLUGIN_DIR" 2>/dev/null || true
+    
+    # In Docker, ensure Maven home directories exist
+    mkdir -p ~/.m2 2>/dev/null || true
+}
+
+# Call this function early in your script
+fix_docker_paths
 
 # Check if directory exists
 if [ ! -d "$PLUGIN_DIR" ]; then
