@@ -1,4 +1,5 @@
 #!/bin/bash
+# filepath: d:\Codespace\api\gemini_api\bash.sh
 set -eo pipefail  # Exit on error, pipe failure
 
 # Define colors for better output
@@ -6,6 +7,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # Support Docker logging
@@ -39,6 +41,7 @@ fi
 cleanup() {
     echo -e "${BLUE}🧹 Cleaning up temporary files...${NC}"
     [ -n "$TEMP_JSON_FILE" ] && [ -f "$TEMP_JSON_FILE" ] && rm -f "$TEMP_JSON_FILE"
+    [ -n "$TEMP_RESPONSE_FILE" ] && [ -f "$TEMP_RESPONSE_FILE" ] && rm -f "$TEMP_RESPONSE_FILE"
     [ -n "$CURRENT_DIR" ] && [ "$PWD" != "$CURRENT_DIR" ] && cd "$CURRENT_DIR"
 }
 trap cleanup EXIT INT TERM
@@ -70,6 +73,7 @@ log() {
         "SUCCESS") color=$GREEN ;;
         "WARNING") color=$YELLOW ;;
         "ERROR") color=$RED ;;
+        "DEBUG") color=$CYAN ;;
     esac
     
     echo -e "${color}[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $message${NC}"
@@ -77,7 +81,7 @@ log() {
 }
 
 # Check for required dependencies
-REQUIRED_TOOLS=("mvn" "jq" "curl")
+REQUIRED_TOOLS=("mvn" "jq" "curl" "java")
 MISSING_TOOLS=()
 
 for tool in "${REQUIRED_TOOLS[@]}"; do
@@ -98,7 +102,7 @@ fi
 # Handle command line arguments
 if [ "$#" -lt 2 ]; then
     echo "Usage: $0 <plugin_directory> <bearer_token> [api_host] [options]"
-    echo "Example: $0 /path/to/plugin-directory my-token http://localhost:5000"
+    echo "Example: $0 /path/to/plugin-directory my-token http://localhost:3001"
     echo ""
     echo "Options:"
     echo "  --verbose       Enable verbose output"
@@ -106,20 +110,24 @@ if [ "$#" -lt 2 ]; then
     echo "  --max-attempts N  Set maximum AI fix attempts (default: 5)"
     echo "  --parallel N    Set Maven parallel threads (default: available CPU cores)"
     echo "  --timeout N     Set API request timeout in seconds (default: 600)"
+    echo "  --debug         Enable debug mode with additional logging"
+    echo "  --skip-verify   Skip JAR verification step"
     exit 1
 fi
 
 # Parse required arguments
-PLUGIN_DIR="$1"
+PLUGIN_DIR=$(realpath "$1" 2>/dev/null || echo "$1")
 TOKEN="$2"
 API_HOST="${3:-http://localhost:3001}"
 API_URL_FIX="${API_HOST}/api/fix"
 
 # Default options
 VERBOSE=false
+DEBUG=false
 MAX_AI_FIX_ATTEMPTS=5
 MAVEN_PARALLEL=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)
 API_TIMEOUT=600
+SKIP_VERIFY=false
 
 # Parse optional arguments
 shift 3 || shift "$#"
@@ -129,11 +137,17 @@ while [[ $# -gt 0 ]]; do
             VERBOSE=true
             shift
             ;;
+        --debug)
+            DEBUG=true
+            VERBOSE=true
+            shift
+            ;;
         --no-color)
             RED=''
             GREEN=''
             YELLOW=''
             BLUE=''
+            CYAN=''
             NC=''
             shift
             ;;
@@ -149,6 +163,10 @@ while [[ $# -gt 0 ]]; do
             API_TIMEOUT="$2"
             shift 2
             ;;
+        --skip-verify)
+            SKIP_VERIFY=true
+            shift
+            ;;
         *)
             echo -e "${RED}❌ Unknown option: $1${NC}"
             exit 1
@@ -156,9 +174,12 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Extract plugin name from directory
+PLUGIN_NAME=$(basename "$PLUGIN_DIR")
+
 # Set up logging
 LOG_FILE="$PLUGIN_DIR/build.log"
-echo "" > "$LOG_FILE"  # Initialize log file
+echo "Build started at $(date -u '+%Y-%m-%dT%H:%M:%S.%3NZ')" > "$LOG_FILE"
 
 # Output setup information
 log "INFO" "Starting build process for plugin in $PLUGIN_DIR"
@@ -166,15 +187,18 @@ log "INFO" "Using $API_HOST for AI assistance"
 $VERBOSE && log "INFO" "Maven parallel threads: $MAVEN_PARALLEL"
 $VERBOSE && log "INFO" "Maximum AI fix attempts: $MAX_AI_FIX_ATTEMPTS"
 
-# Early in the script, add better debugging:
-echo "Starting build script with arguments:"
-echo "Plugin directory: $PLUGIN_DIR"
-echo "API host: $API_HOST"
-echo "Current directory: $(pwd)"
-echo "Maven version: $(mvn --version 2>&1 || echo 'Maven not found')"
-echo "Java version: $(java -version 2>&1 || echo 'Java not found')"
+# Early debugging information if debug mode is enabled
+if $DEBUG; then
+    log "DEBUG" "Build script environment:"
+    log "DEBUG" "Plugin directory: $PLUGIN_DIR"
+    log "DEBUG" "API host: $API_HOST"
+    log "DEBUG" "Current directory: $(pwd)"
+    log "DEBUG" "Maven version: $(mvn --version 2>&1 | head -n 1)"
+    log "DEBUG" "Java version: $(java -version 2>&1 | head -n 1)"
+    log "DEBUG" "Operating system: $(uname -a 2>/dev/null || echo 'Unknown')"
+fi
 
-# Add this function to handle Docker-specific issues:
+# Function to handle Docker-specific issues
 fix_docker_paths() {
     # Make sure we can write to output directories
     mkdir -p "$PLUGIN_DIR/target" 2>/dev/null || true
@@ -182,20 +206,27 @@ fix_docker_paths() {
     
     # In Docker, ensure Maven home directories exist
     mkdir -p ~/.m2 2>/dev/null || true
+    
+    # Fix Maven repository permissions
+    if [ -d ~/.m2/repository ]; then
+        chmod -R 777 ~/.m2/repository 2>/dev/null || true
+    fi
 }
 
-# Call this function early in your script
+# Call this function early
 fix_docker_paths
 
 # Check if directory exists
 if [ ! -d "$PLUGIN_DIR" ]; then
     log "ERROR" "Plugin directory does not exist: $PLUGIN_DIR"
+    echo "{\"success\":false,\"error\":\"Plugin directory not found: $PLUGIN_DIR\"}" > "$PLUGIN_DIR/build_result.json"
     exit 1
 fi
 
 # Check if pom.xml exists
 if [ ! -f "$PLUGIN_DIR/pom.xml" ]; then
     log "ERROR" "No pom.xml found in $PLUGIN_DIR"
+    echo "{\"success\":false,\"error\":\"No pom.xml found in plugin directory\"}" > "$PLUGIN_DIR/build_result.json"
     exit 1
 fi
 
@@ -207,7 +238,11 @@ log "INFO" "----------------------------------------"
 CURRENT_DIR=$(pwd)
 
 # Change to the plugin directory
-cd "$PLUGIN_DIR"
+cd "$PLUGIN_DIR" || {
+    log "ERROR" "Failed to change to plugin directory: $PLUGIN_DIR"
+    echo "{\"success\":false,\"error\":\"Failed to access plugin directory\"}" > "$PLUGIN_DIR/build_result.json"
+    exit 1
+}
 
 # Cross-platform command helper
 find_command() {
@@ -218,6 +253,7 @@ find_command() {
     fi
 }
 
+# Function to log to container logs
 container_log() {
     local level=$1
     local message=$2
@@ -229,12 +265,15 @@ container_log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [CONTAINER] [$level] $message" >> "$LOG_FILE"
 }
 
-# Use it for critical messages:
+# Critical messages go to container log
 container_log "INFO" "Starting build process for plugin $PLUGIN_NAME"
 
-# More efficient Maven build process
+# Enhanced Maven build process with additional error handling
 build_plugin() {
     local build_type=$1
+    local build_output=""
+    local exit_code=0
+    
     log "INFO" "🧹 Cleaning previous build artifacts..."
     rm -rf target/
 
@@ -243,40 +282,85 @@ build_plugin() {
             log "INFO" "🏗️ Running Maven build..."
             if $VERBOSE; then
                 mvn clean package -T "$MAVEN_PARALLEL" -B
+                exit_code=$?
             else
-                mvn clean package -T "$MAVEN_PARALLEL" -B > "$PLUGIN_DIR/maven.log" 2>&1
+                build_output=$(mvn clean package -T "$MAVEN_PARALLEL" -B 2>&1) || exit_code=$?
+                echo "$build_output" > "$PLUGIN_DIR/maven.log"
             fi
             ;;
         "no-shade")
             log "INFO" "🏗️ Running Maven build without shading..."
             if $VERBOSE; then
                 mvn clean package -Dmaven.shade.skip=true -T "$MAVEN_PARALLEL" -B
+                exit_code=$?
             else
-                mvn clean package -Dmaven.shade.skip=true -T "$MAVEN_PARALLEL" -B > "$PLUGIN_DIR/maven-no-shade.log" 2>&1
+                build_output=$(mvn clean package -Dmaven.shade.skip=true -T "$MAVEN_PARALLEL" -B 2>&1) || exit_code=$?
+                echo "$build_output" > "$PLUGIN_DIR/maven-no-shade.log"
             fi
             ;;
         "compile-only")
             log "INFO" "🏗️ Compiling only (for error checking)..."
-            mvn clean compile -e -T "$MAVEN_PARALLEL" -B 2>&1
+            build_output=$(mvn clean compile -e -T "$MAVEN_PARALLEL" -B 2>&1) || exit_code=$?
+            echo "$build_output"
+            return $exit_code
             ;;
     esac
     
-    return $?
+    # Log key info from the build output even in non-verbose mode
+    if [ -n "$build_output" ] && ! $VERBOSE; then
+        # Extract and log errors
+        echo "$build_output" | grep -E '\[ERROR\]|\[WARN\]' | while read -r line; do
+            log "WARNING" "$line"
+        done
+    fi
+    
+    return $exit_code
 }
 
-# Find the JAR file more efficiently
+# Improved JAR file finder
 find_jar_file() {
-    find_command "find" \
-        "JAR_FILE=\$(find target -name \"*.jar\" | grep -v \"original\" | head -n 1)" \
-        "JAR_FILE=\$(dir /s /b target\\*.jar | findstr /v \"original\" | head -n 1 | tr '\\\\' '/')"
-    echo "$JAR_FILE"
+    local jar_file=""
+    
+    # Try different methods to find the JAR
+    if command -v find &> /dev/null; then
+        jar_file=$(find target -name "*.jar" -not -name "*-sources.jar" -not -name "*-javadoc.jar" -not -name "*-original*.jar" -type f | head -n 1)
+    else
+        # Windows alternative using dir
+        jar_file=$(dir /s /b target\\*.jar 2>/dev/null | grep -v "original" | grep -v "sources" | grep -v "javadoc" | head -n 1 | tr '\\' '/')
+    fi
+    
+    # If not found, try a more permissive search
+    if [ -z "$jar_file" ]; then
+        jar_file=$(find target -name "*.jar" -type f | head -n 1 2>/dev/null)
+    fi
+    
+    echo "$jar_file"
 }
 
-# Verify JAR file integrity
+# Enhanced JAR verification with more checks
 verify_jar() {
     local jar_file=$1
+    
+    if $SKIP_VERIFY; then
+        log "INFO" "Skipping JAR verification as requested"
+        return 0
+    fi
+    
     log "INFO" "🔍 Verifying JAR file integrity..."
     
+    # Check if JAR exists
+    if [ ! -f "$jar_file" ]; then
+        log "ERROR" "JAR file does not exist: $jar_file"
+        return 1
+    fi
+    
+    # Check if JAR is readable
+    if [ ! -r "$jar_file" ]; then
+        log "ERROR" "JAR file is not readable: $jar_file"
+        return 1
+    fi
+    
+    # Check JAR structure
     if ! jar -tf "$jar_file" > /dev/null 2>&1; then
         log "ERROR" "JAR file verification failed - file may be corrupted"
         return 1
@@ -286,6 +370,10 @@ verify_jar() {
     if ! jar -tf "$jar_file" | grep -q "plugin.yml"; then
         log "WARNING" "JAR file may be missing plugin.yml"
     fi
+    
+    # Calculate file size
+    local file_size=$(du -h "$jar_file" 2>/dev/null | cut -f1 || echo "unknown")
+    log "INFO" "JAR file size: $file_size"
     
     # Calculate and record checksum
     local checksum
@@ -302,18 +390,28 @@ verify_jar() {
     return 0
 }
 
-# Collect file contents for AI fix more efficiently
+# More efficient file content collection
 collect_file_contents() {
     local first=true
     local file_data=""
-
-    find_command "find" \
-        "FILE_LIST=\$(find . -type f \\( -name \"*.java\" -o -name \"pom.xml\" -o -name \"plugin.yml\" -o -name \"config.yml\" \\) -not -path \"./target/*\" 2>/dev/null)" \
-        "FILE_LIST=\$(dir /s /b *.java *.xml *.yml | findstr /v /i target)"
-
-    for file in $FILE_LIST; do
+    local file_list=""
+    
+    # Find all relevant source files
+    if command -v find &> /dev/null; then
+        file_list=$(find . -type f \( -name "*.java" -o -name "pom.xml" -o -name "plugin.yml" -o -name "config.yml" \) -not -path "./target/*" 2>/dev/null)
+    else
+        # Windows fallback
+        file_list=$(dir /s /b *.java *.xml *.yml 2>/dev/null | grep -v /target/ | grep -v \\target\\)
+    fi
+    
+    for file in $file_list; do
         # Skip target directory files
         [[ "$file" == *"target/"* ]] && continue
+        [[ "$file" == *"target\\"* ]] && continue
+        
+        # Skip files that don't exist or aren't readable
+        [ ! -f "$file" ] && continue
+        [ ! -r "$file" ] && continue
 
         if [ "$first" = true ]; then
             first=false
@@ -322,21 +420,42 @@ collect_file_contents() {
         fi
 
         # Get relative path
-        find_command "realpath" \
-            "REL_PATH=\$(realpath --relative-to=\".\" \"$file\")" \
-            "REL_PATH=\"$file\""
+        local rel_path
+        if command -v realpath &> /dev/null; then
+            rel_path=$(realpath --relative-to="." "$file")
+        else
+            # Simple fallback
+            rel_path="$file"
+            # Remove leading ./ if present
+            rel_path="${rel_path#./}"
+        fi
 
-        file_data+="\"$REL_PATH\": $(jq -Rs . < "$file")"
+        # Use jq to properly escape the file content
+        if command -v jq &> /dev/null; then
+            file_data+="\"$rel_path\": $(jq -Rs . < "$file")"
+        else
+            # Fallback for systems without jq (less reliable)
+            local content
+            content=$(cat "$file" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | tr -d '\r' | tr '\n' ' ')
+            file_data+="\"$rel_path\": \"$content\""
+        fi
     done
 
     echo "$file_data"
 }
 
-# Analyze build errors to give better feedback
+# Enhanced build error analysis
 analyze_build_errors() {
     local build_output=$1
     log "INFO" "🔎 Analyzing build errors..."
     
+    # Create a summary of error types
+    local error_count=$(echo "$build_output" | grep -c "\[ERROR\]" || echo "0")
+    local warning_count=$(echo "$build_output" | grep -c "\[WARNING\]" || echo "0")
+    
+    log "INFO" "Found $error_count errors and $warning_count warnings"
+    
+    # Check for common error patterns
     if echo "$build_output" | grep -q "No compiler is provided in this environment"; then
         log "ERROR" "Java compiler not found. Please ensure JDK is installed and JAVA_HOME is set."
     fi
@@ -360,6 +479,15 @@ analyze_build_errors() {
     if echo "$build_output" | grep -q "Failed to execute goal org.apache.maven.plugins:maven-shade-plugin"; then
         log "ERROR" "Shade plugin execution failed. May need to try without shading."
     fi
+    
+    if echo "$build_output" | grep -q "OutOfMemoryError"; then
+        log "ERROR" "Maven build ran out of memory. Try increasing JVM heap size."
+    fi
+    
+    # Check for specific file errors
+    echo "$build_output" | grep -E "\[ERROR\] (.+\.java):\[([0-9]+),([0-9]+)\]" | head -n 5 | while read -r line; do
+        log "WARNING" "Source error: $line"
+    done
 }
 
 # Try to build the plugin
@@ -378,16 +506,16 @@ if build_plugin "normal"; then
             log "INFO" "To use the plugin, copy this JAR file to your Minecraft server's plugins folder."
             # Add standardized output for the server to parse
             echo "PLUGIN_JAR_PATH:$JAR_FILE"
-            echo "{\"success\":true,\"jarPath\":\"$JAR_FILE\",\"buildLog\":\"$LOG_FILE\"}" > "$PLUGIN_DIR/build_result.json"
+            echo "{\"success\":true,\"jarPath\":\"$JAR_FILE\",\"buildLog\":\"$LOG_FILE\",\"message\":\"Build completed successfully\"}" > "$PLUGIN_DIR/build_result.json"
             exit 0
         else
             log "ERROR" "JAR verification failed for $JAR_FILE"
-            echo "{\"success\":false,\"error\":\"JAR verification failed\",\"jarPath\":\"$JAR_FILE\"}" > "$PLUGIN_DIR/build_result.json"
+            echo "{\"success\":false,\"error\":\"JAR verification failed\",\"jarPath\":\"$JAR_FILE\",\"buildLog\":\"$LOG_FILE\"}" > "$PLUGIN_DIR/build_result.json"
             exit 1
         fi
     else
         log "WARNING" "⚠️ Plugin JAR file not found in target directory."
-        echo "{\"success\":false,\"error\":\"JAR file not found\"}" > "$PLUGIN_DIR/build_result.json"
+        echo "{\"success\":false,\"error\":\"JAR file not found\",\"buildLog\":\"$LOG_FILE\"}" > "$PLUGIN_DIR/build_result.json"
         exit 1
     fi
 else
@@ -408,19 +536,24 @@ else
 
         # Capture the build errors
         BUILD_ERRORS=$(build_plugin "compile-only")
+        BUILD_EXIT_CODE=$?
         
         # Analyze errors to provide better feedback
         analyze_build_errors "$BUILD_ERRORS"
 
         log "INFO" "🔍 Packaging build errors for analysis..."
 
-        # Prepare the JSON payload with errors and file contents
+        # Create temp files with unique names to avoid conflicts
         TEMP_JSON_FILE=$(mktemp)
+        TEMP_RESPONSE_FILE=$(mktemp)
+        
+        # Prepare the JSON payload with errors and file contents
         echo "{" > "$TEMP_JSON_FILE"
         echo "  \"buildErrors\": $(jq -Rs . <<< "$BUILD_ERRORS")," >> "$TEMP_JSON_FILE"
         echo "  \"files\": {" >> "$TEMP_JSON_FILE"
         collect_file_contents >> "$TEMP_JSON_FILE"
-        echo "  }" >> "$TEMP_JSON_FILE"
+        echo "  }," >> "$TEMP_JSON_FILE"
+        echo "  \"pluginDir\": \"$PLUGIN_DIR\"" >> "$TEMP_JSON_FILE"
         echo "}" >> "$TEMP_JSON_FILE"
 
         log "INFO" "🔄 Sending build errors to API for fixing (this may take a few minutes)..."
@@ -430,7 +563,7 @@ else
         (curl -s --connect-timeout 30 --max-time "$API_TIMEOUT" -X POST "$API_URL_FIX" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $TOKEN" \
-            -d @"$TEMP_JSON_FILE" > "${TEMP_JSON_FILE}.response") &
+            -d @"$TEMP_JSON_FILE" > "$TEMP_RESPONSE_FILE") &
         CURL_PID=$!
         
         # Show spinner if not in verbose mode
@@ -440,15 +573,31 @@ else
             wait $CURL_PID
         fi
         
-        FIX_RESPONSE=$(cat "${TEMP_JSON_FILE}.response")
-        rm -f "${TEMP_JSON_FILE}.response"
-
+        # Check if the curl command succeeded
+        CURL_STATUS=$?
+        if [ $CURL_STATUS -ne 0 ]; then
+            log "ERROR" "❌ API request failed with status $CURL_STATUS"
+            log "INFO" "Continuing with next fix attempt..."
+            rm -f "$TEMP_JSON_FILE" "$TEMP_RESPONSE_FILE"
+            continue
+        fi
+        
+        # Check if response is empty
+        if [ ! -s "$TEMP_RESPONSE_FILE" ]; then
+            log "ERROR" "❌ Received empty response from API"
+            log "INFO" "Continuing with next fix attempt..."
+            rm -f "$TEMP_JSON_FILE" "$TEMP_RESPONSE_FILE"
+            continue
+        fi
+        
+        FIX_RESPONSE=$(cat "$TEMP_RESPONSE_FILE")
+        
         # Validate fix API response
         if ! echo "$FIX_RESPONSE" | jq -e '.status == "success"' > /dev/null 2>&1; then
             ERROR_MSG=$(echo "$FIX_RESPONSE" | jq -r '.message // "Unknown error"')
             log "ERROR" "❌ Error from fix API: $ERROR_MSG"
             log "INFO" "Continuing with next fix attempt..."
-            rm -f "$TEMP_JSON_FILE"
+            rm -f "$TEMP_JSON_FILE" "$TEMP_RESPONSE_FILE"
             continue
         fi
 
@@ -460,15 +609,36 @@ else
         # Count how many files were fixed
         FIXED_COUNT=$(echo "$FIXED_FILES" | jq 'length')
         log "INFO" "Received fixes for $FIXED_COUNT file(s)"
+        
+        # Check if any files were fixed
+        if [ "$FIXED_COUNT" -eq 0 ]; then
+            log "WARNING" "No files were fixed by the API"
+            log "INFO" "Continuing with next fix attempt with a different approach..."
+            rm -f "$TEMP_JSON_FILE" "$TEMP_RESPONSE_FILE"
+            continue
+        }
 
         # Process each fixed file
         for FILE_PATH in $(echo "$FIXED_FILES" | jq -r 'keys[]'); do
+            # Make sure path is safe
+            if [[ "$FILE_PATH" == *".."* ]] || [[ "$FILE_PATH" == "/"* ]]; then
+                log "WARNING" "Skipping suspicious file path: $FILE_PATH"
+                continue
+            }
+            
             # Create directory if it doesn't exist
             mkdir -p "$(dirname "$FILE_PATH")"
             
             # Write content directly to file
             echo "$FIXED_FILES" | jq -r --arg path "$FILE_PATH" '.[$path]' > "$FILE_PATH"
             log "INFO" "🔧 Updated: $FILE_PATH"
+            
+            # Verify file was written
+            if [ ! -f "$FILE_PATH" ]; then
+                log "WARNING" "Failed to write file: $FILE_PATH"
+            elif [ ! -s "$FILE_PATH" ]; then
+                log "WARNING" "File is empty after update: $FILE_PATH"
+            fi
         done
 
         log "INFO" "----------------------------------------"
@@ -491,7 +661,7 @@ else
                     log "INFO" "To use the plugin, copy this JAR file to your Minecraft server's plugins folder."
                     # Add standardized output for the server to parse
                     echo "PLUGIN_JAR_PATH:$JAR_FILE"
-                    echo "{\"success\":true,\"jarPath\":\"$JAR_FILE\",\"fixes\":$AI_FIX_ATTEMPTS,\"buildLog\":\"$LOG_FILE\"}" > "$PLUGIN_DIR/build_result.json"
+                    echo "{\"success\":true,\"jarPath\":\"$JAR_FILE\",\"fixes\":$AI_FIX_ATTEMPTS,\"buildLog\":\"$LOG_FILE\",\"message\":\"Build completed after $AI_FIX_ATTEMPTS fix attempts\"}" > "$PLUGIN_DIR/build_result.json"
                     BUILD_SUCCESS=true
                     break
                 else
@@ -506,11 +676,11 @@ else
                 log "WARNING" "Maximum fix attempts reached."
             else
                 log "INFO" "Continuing with next fix attempt..."
-            fi
+            }
         fi
 
-        # Clean up temp file for this attempt
-        rm -f "$TEMP_JSON_FILE"
+        # Clean up temp files for this attempt
+        rm -f "$TEMP_JSON_FILE" "$TEMP_RESPONSE_FILE"
     done
 
     # If all AI fix attempts failed, try manual approach
@@ -525,24 +695,26 @@ else
         if build_plugin "no-shade"; then
             log "WARNING" "⚠️ Basic build succeeded without shading."
 
-            find_command "find" \
-                "JAR_FILE=\$(find target -name \"*.jar\" | head -n 1)" \
-                "JAR_FILE=\$(dir /s /b target\\*.jar | head -n 1 | tr '\\\\' '/')"
+            # Find JAR after no-shade build
+            JAR_FILE=$(find_jar_file)
 
             if [ -n "$JAR_FILE" ]; then
                 # Verify JAR integrity
                 if verify_jar "$JAR_FILE"; then
                     log "SUCCESS" "🎮 Plugin JAR file created (without shading): $JAR_FILE"
                     log "WARNING" "Note: This JAR may not include all dependencies."
-                    echo "{\"success\":true,\"jarPath\":\"$JAR_FILE\",\"noShade\":true,\"buildLog\":\"$LOG_FILE\"}" > "$PLUGIN_DIR/build_result.json"
+                    echo "{\"success\":true,\"jarPath\":\"$JAR_FILE\",\"noShade\":true,\"buildLog\":\"$LOG_FILE\",\"message\":\"Build succeeded without shading\"}" > "$PLUGIN_DIR/build_result.json"
+                    exit 0
                 else
                     log "ERROR" "JAR verification failed for $JAR_FILE"
-                    echo "{\"success\":false,\"error\":\"JAR verification failed\",\"jarPath\":\"$JAR_FILE\"}" > "$PLUGIN_DIR/build_result.json"
-                fi
+                    echo "{\"success\":false,\"error\":\"JAR verification failed\",\"jarPath\":\"$JAR_FILE\",\"buildLog\":\"$LOG_FILE\"}" > "$PLUGIN_DIR/build_result.json"
+                    exit 1
+                }
             else
                 log "ERROR" "No JAR file created even with shade skipping"
-                echo "{\"success\":false,\"error\":\"No JAR file created even with shade skipping\"}" > "$PLUGIN_DIR/build_result.json"
-            fi
+                echo "{\"success\":false,\"error\":\"No JAR file created even with shade skipping\",\"buildLog\":\"$LOG_FILE\"}" > "$PLUGIN_DIR/build_result.json"
+                exit 1
+            }
         else
             log "ERROR" "----------------------------------------"
             log "ERROR" "❌ Maven build failed with all approaches."
@@ -552,10 +724,26 @@ else
             log "ERROR" "3. Java version compatibility problems"
             log "ERROR" "4. File permission issues in the target directory"
             log "ERROR" "----------------------------------------"
-            echo "{\"success\":false,\"error\":\"All build attempts failed\",\"buildErrors\":$(jq -Rs . <<< "$BUILD_ERRORS"),\"buildLog\":\"$LOG_FILE\"}" > "$PLUGIN_DIR/build_result.json"
+            
+            # Create detailed error report
+            ERROR_REPORT=$(mktemp)
+            echo "# Build Error Report" > "$ERROR_REPORT"
+            echo "Date: $(date)" >> "$ERROR_REPORT"
+            echo "Plugin: $PLUGIN_NAME" >> "$ERROR_REPORT"
+            echo "AI Fix Attempts: $AI_FIX_ATTEMPTS" >> "$ERROR_REPORT"
+            echo "" >> "$ERROR_REPORT"
+            echo "## Last Build Errors" >> "$ERROR_REPORT"
+            echo '```' >> "$ERROR_REPORT"
+            echo "$BUILD_ERRORS" | grep -E '\[ERROR\]|\[FATAL\]' | tail -n 20 >> "$ERROR_REPORT"
+            echo '```' >> "$ERROR_REPORT"
+            
+            cp "$ERROR_REPORT" "$PLUGIN_DIR/error-report.md"
+            rm -f "$ERROR_REPORT"
+            
+            echo "{\"success\":false,\"error\":\"All build attempts failed\",\"buildErrors\":$(jq -Rs . <<< "$BUILD_ERRORS"),\"buildLog\":\"$LOG_FILE\",\"errorReport\":\"$PLUGIN_DIR/error-report.md\"}" > "$PLUGIN_DIR/build_result.json"
             exit 1
-        fi
-    fi
+        }
+    }
 fi
 
 # Return to original directory
