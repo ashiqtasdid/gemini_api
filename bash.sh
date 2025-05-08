@@ -8,6 +8,33 @@ YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# Support Docker logging
+if [ "$DOCKER_ENV" = "true" ] || [ -n "$VERBOSE" ]; then
+    # Force instant log flushing for Docker logs
+    export PYTHONUNBUFFERED=1
+    export PYTHONIOENCODING=UTF-8
+    
+    # Modify log function for Docker
+    log() {
+        local level=$1
+        local message=$2
+        local color=$NC
+        
+        case $level in
+            "INFO") color=$BLUE ;;
+            "SUCCESS") color=$GREEN ;;
+            "WARNING") color=$YELLOW ;;
+            "ERROR") color=$RED ;;
+        esac
+        
+        echo -e "${color}[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $message${NC}"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $message" >> "$LOG_FILE"
+        
+        # Also log to stderr for Docker to capture
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $message" >&2
+    }
+fi
+
 # Set up trap to clean temporary files on exit
 cleanup() {
     echo -e "${BLUE}🧹 Cleaning up temporary files...${NC}"
@@ -190,6 +217,20 @@ find_command() {
         eval "$3"
     fi
 }
+
+container_log() {
+    local level=$1
+    local message=$2
+    
+    # Write directly to stderr for container logs
+    echo "[CONTAINER] [$level] $message" >&2
+    
+    # Also log to regular log file
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [CONTAINER] [$level] $message" >> "$LOG_FILE"
+}
+
+# Use it for critical messages:
+container_log "INFO" "Starting build process for plugin $PLUGIN_NAME"
 
 # More efficient Maven build process
 build_plugin() {

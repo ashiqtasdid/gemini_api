@@ -1,4 +1,4 @@
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import logger from '../utils/logger';
@@ -33,42 +33,52 @@ export function buildPlugin(pluginDir: string): Promise<BuildResult> {
     logger.info(`Building plugin in directory: ${pluginDir}`);
     
     try {
-      // Ensure bash.sh is executable
-      fs.chmodSync(scriptPath, '755');
+      // Use spawn instead of exec for streaming output
+      const buildProcess = spawn('bash', [
+        scriptPath, 
+        pluginDir, 
+        tempToken, 
+        apiHost,
+        '--verbose' // Add verbose flag to see all output
+      ]);
       
-      exec(`bash "${scriptPath}" "${pluginDir}" "${tempToken}" ${apiHost}`, 
-        (error, stdout, stderr) => {
-          if (error) {
-            logger.error(`Build failed: ${error.message}`);
-            logger.error(`Build command: bash "${scriptPath}" "${pluginDir}" "${tempToken}" ${apiHost}`);
-            if (stdout) logger.error(`Build stdout: ${stdout}`);
-            if (stderr) logger.error(`Build stderr: ${stderr}`);
-            return reject(error);
+      // Stream stdout to application logs
+      buildProcess.stdout.on('data', (data) => {
+        const output = data.toString().trim();
+        if (output) logger.info(`Build output: ${output}`);
+      });
+      
+      // Stream stderr to application logs
+      buildProcess.stderr.on('data', (data) => {
+        const output = data.toString().trim();
+        if (output) logger.warn(`Build error: ${output}`);
+      });
+      
+      // Handle completion
+      buildProcess.on('close', (code) => {
+        if (code !== 0) {
+          logger.error(`Build process exited with code ${code}`);
+          reject(new Error(`Build failed with exit code ${code}`));
+          return;
+        }
+        
+        try {
+          const buildResultPath = path.join(pluginDir, 'build_result.json');
+          if (fs.existsSync(buildResultPath)) {
+            const buildResult = JSON.parse(fs.readFileSync(buildResultPath, 'utf8'));
+            resolve(buildResult as BuildResult);
+          } else {
+            logger.warn(`No build_result.json found at: ${buildResultPath}`);
+            resolve({ 
+              success: true, 
+              output: 'Build completed but no result file was found'
+            });
           }
-          
-          logger.info(`Build completed successfully`);
-          if (stderr) logger.warn(`Build warnings: ${stderr.substring(0, 200)}...`);
-          
-          // Read build result
-          try {
-            const buildResultPath = path.join(pluginDir, 'build_result.json');
-            if (fs.existsSync(buildResultPath)) {
-              const buildResult = JSON.parse(fs.readFileSync(buildResultPath, 'utf8'));
-              resolve(buildResult as BuildResult);
-            } else {
-              logger.warn(`No build_result.json found at: ${buildResultPath}`);
-              // Default response if no build result file
-              resolve({ 
-                success: true, 
-                output: stdout,
-                error: stderr || undefined
-              });
-            }
-          } catch (parseError) {
-            logger.error(`Failed to parse build result: ${parseError}`);
-            resolve({ success: true, output: stdout });
-          }
-        });
+        } catch (parseError) {
+          logger.error(`Failed to parse build result: ${parseError}`);
+          reject(parseError);
+        }
+      });
     } catch (execError) {
       logger.error(`Failed to execute build command: ${execError}`);
       reject(execError);
