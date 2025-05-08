@@ -3,19 +3,21 @@ import { Request, Response, NextFunction } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import logger from '../utils/logger';
 
-// Define environment
+// Define environment - more robust check for Docker environments
 const isDevelopment = process.env.NODE_ENV !== 'production';
+const isDocker = process.env.DOCKER_ENV === 'true' || process.env.RUNNING_IN_DOCKER === 'true';
 
-// Create colors for development logs
+// Create colors for development logs (disable in Docker if not explicitly enabled)
+const useColors = isDevelopment && !isDocker;
 const colors = {
-  reset: '\x1b[0m',
-  red: '\x1b[31m',
-  green: '\x1b[32m',
-  yellow: '\x1b[33m',
-  blue: '\x1b[34m',
-  magenta: '\x1b[35m',
-  cyan: '\x1b[36m',
-  gray: '\x1b[37m'
+  reset: useColors ? '\x1b[0m' : '',
+  red: useColors ? '\x1b[31m' : '',
+  green: useColors ? '\x1b[32m' : '',
+  yellow: useColors ? '\x1b[33m' : '',
+  blue: useColors ? '\x1b[34m' : '',
+  magenta: useColors ? '\x1b[35m' : '',
+  cyan: useColors ? '\x1b[36m' : '',
+  gray: useColors ? '\x1b[37m' : ''
 };
 
 // Create a token for request ID
@@ -70,7 +72,7 @@ morgan.token('response-time-colored', (req: Request, res: Response, arg?: string
   const digits = typeof arg === 'string' || typeof arg === 'number' ? parseInt(String(arg), 10) : 3;
   const ms = parseInt(time.toFixed(digits), 10);
   
-  if (isDevelopment) {
+  if (useColors) {
     if (ms < 100) return colors.green + ms + 'ms' + colors.reset;
     if (ms < 500) return colors.yellow + ms + 'ms' + colors.reset;
     return colors.red + ms + 'ms' + colors.reset;
@@ -84,7 +86,7 @@ morgan.token('status-colored', (req: Request, res: Response) => {
   const status = res.statusCode;
   let color = colors.green;
   
-  if (isDevelopment) {
+  if (useColors) {
     if (status >= 400 && status < 500) color = colors.yellow;
     if (status >= 500) color = colors.red;
     return color + status + colors.reset;
@@ -97,7 +99,7 @@ morgan.token('status-colored', (req: Request, res: Response) => {
 morgan.token('method-colored', (req: Request) => {
   let color;
   
-  if (isDevelopment) {
+  if (useColors) {
     switch (req.method) {
       case 'GET': color = colors.blue; break;
       case 'POST': color = colors.green; break;
@@ -113,43 +115,77 @@ morgan.token('method-colored', (req: Request) => {
 });
 
 // Routes to skip logging (health checks, static files)
+// Reduce the list to ensure you're not skipping important routes
 const skipRoutes = [
-  '/health',
-  '/ping',
-  '/static',
-  '/assets',
-  '/favicon.ico'
+  '/favicon.ico'  // Only skip favicon requests for now
 ];
 
-// Create stream for Morgan that writes to Winston logger
-const stream = {
-  write: (message: string) => {
-    // Remove newline
-    const logMessage = message.trim();
-    
-    // Log with appropriate level based on status code
-    const statusMatch = logMessage.match(/\s(\d{3})\s/);
-    if (statusMatch) {
-      const status = parseInt(statusMatch[1], 10);
-      if (status >= 500) {
-        logger.error(logMessage);
-      } else if (status >= 400) {
-        logger.warn(logMessage);
+// Directly log to console for Docker environments
+const getStream = () => {
+  if (isDocker) {
+    return {
+      write: (message: string) => {
+        // Remove newline and log directly to console
+        const logMessage = message.trim();
+        
+        // Log directly to console to ensure Docker captures it
+        console.log(logMessage);
+      }
+    };
+  }
+  
+  // Default stream for non-Docker environments
+  return {
+    write: (message: string) => {
+      // Remove newline
+      const logMessage = message.trim();
+      
+      // Log with appropriate level based on status code
+      const statusMatch = logMessage.match(/\s(\d{3})\s/);
+      if (statusMatch) {
+        const status = parseInt(statusMatch[1], 10);
+        if (status >= 500) {
+          logger.error(logMessage);
+        } else if (status >= 400) {
+          logger.warn(logMessage);
+        } else {
+          logger.http(logMessage);
+        }
       } else {
         logger.http(logMessage);
       }
-    } else {
-      logger.http(logMessage);
     }
-  },
+  };
 };
 
-// Skip function to ignore certain routes
+// Module-level counters instead of static variables
+let requestCount = 0;
+let debugCount = 0;
+
+// Skip function to ignore certain routes - be less aggressive about skipping
 const skip = (req: Request) => {
-  return skipRoutes.some(route => req.url.startsWith(route));
+  // Add debug logging on first few requests
+  if (requestCount < 5) {
+    console.log(`[DEBUG] Handling request: ${req.method} ${req.url}`);
+    requestCount++;
+  }
+  
+  return skipRoutes.some(route => req.url === route); // Only skip exact matches
 };
 
 // Define format based on environment
+const dockerFormat = [
+  '[HTTP]',
+  '[:date[iso]]',
+  ':request-id',
+  ':method',
+  ':url',
+  ':status',
+  ':response-time ms',
+  ':remote-addr',
+  ':user'
+].join(' ');
+
 const developmentFormat = [
   colors.cyan + '[:date[iso]]' + colors.reset,
   ':request-id',
@@ -175,6 +211,12 @@ const productionFormat = [
   ':user-agent'
 ].join(' ');
 
+// Get the appropriate format
+const getFormat = () => {
+  if (isDocker) return dockerFormat;
+  return isDevelopment ? developmentFormat : productionFormat;
+};
+
 // Middleware to ensure we capture the start time
 const startTimeMiddleware = (req: Request, res: Response, next: NextFunction) => {
   (req as any)._startAt = process.hrtime();
@@ -199,12 +241,23 @@ const requestIdMiddleware = (req: Request, res: Response, next: NextFunction) =>
   next();
 };
 
+// Debug middleware to verify logger is working
+const debugMiddleware = (req: Request, res: Response, next: NextFunction) => {
+  // Log the first 5 requests to make sure our logger is working
+  if (debugCount < 5) {
+    console.log(`[LOGGER-DEBUG] Request received: ${req.method} ${req.url}`);
+    debugCount++;
+  }
+  next();
+};
+
 // Export middleware stack
 export const httpLogger = [
+  debugMiddleware,
   startTimeMiddleware,
   requestIdMiddleware,
-  morgan(isDevelopment ? developmentFormat : productionFormat, { 
-    stream,
+  morgan(getFormat(), { 
+    stream: getStream(),
     skip
   })
 ];
@@ -217,3 +270,6 @@ declare global {
     }
   }
 }
+
+// Log that the logger has been initialized
+console.log('[HTTP-LOGGER] HTTP Logger initialized');

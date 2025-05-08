@@ -31,6 +31,13 @@ const logger = winston.createLogger({
   format: logFormat,
   defaultMeta: { service: 'gemini-api' },
   transports: [
+    // Always include console transport in Docker
+    new winston.transports.Console({
+      format: winston.format.combine(
+        winston.format.colorize({ all: false }),
+        winston.format.simple()
+      )
+    }),
     // Write all logs with level 'error' and below to error.log
     new winston.transports.File({ 
       filename: path.join(logsDir, 'error.log'), 

@@ -1,0 +1,12 @@
+{"level":"warn","message":"Authentication failed: No token provided [::ffff:127.0.0.1] POST /","service":"gemini-api","timestamp":"2025-05-09 00:56:17"}
+{"level":"warn","message":"[2025-05-08T18:56:17.068Z] 40600eb2-420b-4c96-911a-b605a987f707 ::ffff:127.0.0.1 POST /create 401 3.102 ms anonymous - Thunder Client (https://www.thunderclient.com)","service":"gemini-api","timestamp":"2025-05-09 00:56:17"}
+{"level":"warn","message":"Authentication failed: No token provided [::ffff:127.0.0.1] POST /","service":"gemini-api","timestamp":"2025-05-09 00:56:19"}
+{"level":"warn","message":"[2025-05-08T18:56:19.422Z] aa9d8412-a516-49c8-a0e6-5f3667add851 ::ffff:127.0.0.1 POST /create 401 0.577 ms anonymous - Thunder Client (https://www.thunderclient.com)","service":"gemini-api","timestamp":"2025-05-09 00:56:19"}
+{"level":"warn","message":"Authentication failed: No token provided [::ffff:127.0.0.1] POST /","service":"gemini-api","timestamp":"2025-05-09 00:56:19"}
+{"level":"warn","message":"[2025-05-08T18:56:19.991Z] 9b29e12e-3183-46b6-aad1-be0946150c11 ::ffff:127.0.0.1 POST /create 401 0.615 ms anonymous - Thunder Client (https://www.thunderclient.com)","service":"gemini-api","timestamp":"2025-05-09 00:56:19"}
+{"level":"warn","message":"Authentication failed: No token provided [::ffff:127.0.0.1] POST /","service":"gemini-api","timestamp":"2025-05-09 00:56:20"}
+{"level":"warn","message":"[2025-05-08T18:56:20.314Z] c6c174fc-2bdb-488a-a3cd-97a458d9f83c ::ffff:127.0.0.1 POST /create 401 0.501 ms anonymous - Thunder Client (https://www.thunderclient.com)","service":"gemini-api","timestamp":"2025-05-09 00:56:20"}
+{"level":"warn","message":"Authentication failed: No token provided [::ffff:127.0.0.1] POST /","service":"gemini-api","timestamp":"2025-05-09 00:56:20"}
+{"level":"warn","message":"[2025-05-08T18:56:20.675Z] 249edc6e-fe65-4ea7-b17b-ebd98a9c33be ::ffff:127.0.0.1 POST /create 401 0.518 ms anonymous - Thunder Client (https://www.thunderclient.com)","service":"gemini-api","timestamp":"2025-05-09 00:56:20"}
+{"level":"warn","message":"Authentication failed: No token provided [::ffff:127.0.0.1] POST /","service":"gemini-api","timestamp":"2025-05-09 00:56:21"}
+{"level":"warn","message":"[2025-05-08T18:56:21.141Z] 6ab0c3c3-013e-456e-b4eb-05f816cbe128 ::ffff:127.0.0.1 POST /create 401 0.388 ms anonymous - Thunder Client (https://www.thunderclient.com)","service":"gemini-api","timestamp":"2025-05-09 00:56:21"}
