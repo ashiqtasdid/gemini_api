@@ -7,6 +7,7 @@ import downloadRoute from './routes/download';
 import { authenticateToken } from './middleware/auth';
 import { httpLogger } from './middleware/httpLogger';
 import logger from './utils/logger';
+import buildLogsRouter from './routes/buildLogs';
 
 const app = express();
 
@@ -31,6 +32,8 @@ app.use('/api/fix', authenticateToken, fixRoute);
 app.use('/api/build', authenticateToken, buildRoute);
 app.use('/api/build-status', authenticateToken, buildStatusRoute);
 app.use('/api/download', authenticateToken, downloadRoute);
+app.use('/api/build-logs', buildLogsRouter);
+
 
 // Global error handler
 app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
